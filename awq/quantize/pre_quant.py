@@ -24,6 +24,8 @@ def get_named_linears(module):
 def get_blocks(model):
     if model.__class__.__name__ == "LlamaForCausalLM":
         layers = model.model.layers
+    elif model.__class__.__name__ == "PlamoForCausalLM":
+        layers = model.model.layers.layers
     elif model.__class__.__name__ == "LlavaLlamaForCausalLM":
         # layers = [model.model.layers, model.model.vision_tower.vision_tower.vision_model.encoder.layers]
         layers = model.model.layers
@@ -73,6 +75,8 @@ def move_embed(model, device):
         model.gpt_neox.embed_in = model.gpt_neox.embed_in.to(device)
         model.gpt_neox.emb_dropout = model.gpt_neox.emb_dropout.to(device)
         model.embed_out = model.embed_out.to(device)
+    elif "plamo" in str(model.__class__).lower():
+        model.model.embed_tokens = model.model.embed_tokens.to(device)
     else:
         raise NotImplementedError(type(model))
 
