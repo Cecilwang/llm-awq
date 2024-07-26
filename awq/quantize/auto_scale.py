@@ -59,6 +59,7 @@ def scale_fc_fc(fc1, fc2, scales):
     scales = scales.to(fc1.weight.device)
 
     # fc1.weight.div_(scales.view(-1, 1))
+    # It happens that this handles fused weights correctly, e.g. gate_up_proj in DenseMLP of plamo
     fc1.weight[-scales.size(0) :].div_(scales.view(-1, 1))
     if fc1.bias is not None:
         fc1.bias.div_(scales.view(-1))
@@ -162,12 +163,10 @@ def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
 
         scales = _search_module_scale(module2inspect, layers, inp, kwargs)
         scales = scales.detach().cpu()
-        # prev_op_name, [layer_name], scale
-        return (
-            get_op_name(module, prev_op),
-            tuple([get_op_name(module, m) for m in layers]),
-            scales,
-        )
+        prev_op_name = get_op_name(module, prev_op)
+        layer_names = tuple([get_op_name(module, m) for m in layers])
+        print(f"prev_op {prev_op_name}, layers {layer_names}, scales min {scales.min()} max {scales.max()} mean {scales.mean()}")
+        return (prev_op_name, layer_names, scales)
 
     scales_list = []  # return the searched scales
 
@@ -224,14 +223,19 @@ def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
                 kwargs=module_kwargs,
             )
         )
-        #scales_list.append(
-        #    _auto_get_scale(
-        #        # FIXME
-        #        prev_op=module.self_attn.v_proj,
-        #        layers=[module.self_attn.o_proj],
-        #        inp=input_feat["self_attn.o_proj"],
-        #    )
-        #)
+        # attn out
+        # Please refer to https://github.com/mit-han-lab/llm-awq/pull/67#issue-1850622696
+        # We hope o_proj does not lead to degradation, need to test!
+        # This condition does not hold for plamo.
+        #if module.self_attn.v_proj.weight.shape == module.self_attn.o_proj.weight.shape:
+        #   scales_list.append(
+        #       _auto_get_scale(
+        #           # FIXME
+        #           prev_op=module.self_attn.v_proj,
+        #           layers=[module.self_attn.o_proj],
+        #           inp=input_feat["self_attn.o_proj"],
+        #       )
+        #   )
         if "dense" in str(module.mlp.__class__).lower():
             # fc1
             scales_list.append(
@@ -243,17 +247,18 @@ def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
                 )
             )
             # fc2
-            #scales_list.append(
-            #    _auto_get_scale(
-                     # FIXME up_proj or scale / 2
-            #        prev_op=module.mlp.up_proj,
-            #        layers=[module.mlp.down_proj],
-            #        inp=input_feat["mlp.down_proj"],
-            #    )
-            #)
+            scales_list.append(
+                _auto_get_scale(
+                    prev_op=module.mlp.gate_up_proj,
+                    layers=[module.mlp.down_proj],
+                    inp=input_feat["mlp.down_proj"],
+                )
+            )
         else:
             assert "sparse" in str(module.mlp.__class__).lower()
-            print(f"skip {module.mlp}")
+            raise NotImplementedError(
+                "SparseMLP is not supported yet"
+            )
 
     elif isinstance(module, LlamaDecoderLayer):
         # attention input
@@ -490,6 +495,7 @@ def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
 
 
 def apply_scale(module, scales_list, input_feat_dict=None):
+    breakpoint()
     for prev_op_name, layer_names, scales in scales_list:
         prev_op = get_op_by_name(module, prev_op_name)
         layers = [get_op_by_name(module, name) for name in layer_names]
@@ -499,7 +505,13 @@ def apply_scale(module, scales_list, input_feat_dict=None):
             layer.cuda()
         scales.cuda()
 
-        if isinstance(prev_op, nn.Linear):
+        if 'plamo' in str(prev_op.__class__).lower():
+            if 'rmsnorm' in str(prev_op.__class__).lower():
+                scale_ln_fcs(prev_op, layers, scales)
+            elif 'gate_up_proj' in prev_op_name:
+                assert len(layers) == 1
+                scale_fc_fc(prev_op, layers[0], scales)
+        elif isinstance(prev_op, nn.Linear):
             assert len(layers) == 1
             scale_fc_fc(prev_op, layers[0], scales)
         elif isinstance(prev_op, (nn.LayerNorm, LlamaRMSNorm)):
