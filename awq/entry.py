@@ -25,6 +25,10 @@ import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model_path", type=str, help="path of the hf model")
+parser.add_argument(
+    "--dummy_model",
+    action="store_true",
+)
 parser.add_argument("--batch_size", type=int, default=1, help="batch size")
 parser.add_argument("--tasks", default=None, type=str)
 parser.add_argument("--output_path", default=None, type=str)
@@ -158,9 +162,13 @@ def build_model_and_enc(model_path):
         # Init model on CPU:
         kwargs = {"torch_dtype": torch.float16, "low_cpu_mem_usage": True}
         if not vila_10_quant_mode:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path, config=config, trust_remote_code=True, **kwargs
-            )
+            if args.dummy_model:
+                config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+                model = AutoModelForCausalLM.from_config(config, trust_remote_code=True, torch_dtype=torch.float16)
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path, config=config, trust_remote_code=True, **kwargs
+                )
 
         model.eval()
 
