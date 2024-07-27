@@ -206,6 +206,7 @@ def build_model_and_enc(model_path):
                 pseudo_quantize_model_weight(model, w_bit=args.w_bit, q_config=q_config)
                 if args.dump_fake:
                     model.save_pretrained(args.dump_fake)
+                    enc.save_pretrained(args.dump_fake)
                     print("Pseudo-quantized models saved at", args.dump_fake)
             elif args.q_backend == "real":  # real quantization
                 real_quantize_model_weight(model, w_bit=args.w_bit, q_config=q_config)
